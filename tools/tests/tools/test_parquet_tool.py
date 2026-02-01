@@ -1,50 +1,152 @@
 """Test for the Parquet tool. Goal: To test the Parquet, read and describe functions."""
 
-from pathline import Path
-from unittest import TestCase
+from pathlib import Path
+# from unittest import TestCase
 from aden_tools.tools.parquet_tool.parquet_tool import register_tools
 import pytest
-from fasmcp import FastMCP
+from fastmcp import FastMCP
 from unittest.mock import patch
+import duckdb
 
 # Test IDs for sandbox environment
-WORKSPACE_ID = "test_workspace"
-AGENT_ID = "test_agent"
-SESSION_ID = "test_session"
+TEST_WORKSPACE_ID = "test_workspace"
+TEST_AGENT_ID = "test_agent"
+TEST_SESSION_ID = "test_session"
 
 @pytest.fixture
-def parquet_tool_mcp():
+def mcp():
     """Fixture to create an MCP instance with Parquet tool registered."""
     mcp = FastMCP()
     register_tools(mcp)
     return mcp
 
-@pytest.fixture
-def parquet_tool_functions(parquet_tool_mcp: FastMCP, tmp_path: Path):
-    """Fixture to get the parquet tool functions."""
-    with patch("aden_tools.tools.file_system_toolkits.security.WORKSPACES_DIR", str(tmp_path)):
-        return {
-            "parquet_read": parquet_tool_mcp.get_tool("parquet_read"),
-            "describe_parquet": parquet_tool_mcp.get_tool("describe_parquet"),
-            "sample_parquet": parquet_tool_mcp.get_tool("sample_parquet"),
-            "run_sql_on_parquet": parquet_tool_mcp.get_tool("run_sql_on_parquet"),
-        }
 
 @pytest.fixture
-def parquet_file_path(tmp_path: Path) -> Path:
-    """Fixture to create a sample parquet file for testing."""
-    sample_parquet = tmp_path / "sample.parquet"
-    # Here you would normally create a sample parquet file.
-    # For simplicity, we just return the path.
-    return sample_parquet
+def parquet_tools(mcp: FastMCP, tmp_path: Path):
+    with patch("aden_tools.tools.file_system_toolkits.security.WORKSPACES_DIR", str(tmp_path)):
+        yield {
+            "parquet_info": mcp._tool_manager._tools["parquet_info"].fn,
+            "parquet_preview": mcp._tool_manager._tools["parquet_preview"].fn,
+            "sample_parquet": mcp._tool_manager._tools["sample_parquet"].fn,
+            "run_sql_on_parquet": mcp._tool_manager._tools["run_sql_on_parquet"].fn,
+        }
+@pytest.fixture
+def session_dir(tmp_path: Path) -> Path:
+    session_path = tmp_path / TEST_WORKSPACE_ID / TEST_AGENT_ID / TEST_SESSION_ID
+    session_path.mkdir(parents=True, exist_ok=True)
+    return session_path
 
 @pytest.fixture
 def sample_parquet_data(session_dir: Path):
     """Fixture to provide sample parquet data."""
-    # Here you would normally provide sample data.
-    # For simplicity, we just return an empty list.
     parquet_file = session_dir / "sample.parquet"
-    parquet_file.write_text("id,name,age,salary,city,department,is_active,score,joined_at\n1,Alice,30,92000,NYC,Engineering,True,4.7,2022-03-14")
+    duckdb.sql(
+        """
+        CREATE OR REPLACE TABLE sample_data AS
+        SELECT * FROM (VALUES
+            (1, 'Alice', 30),
+            (2, 'Bob', 25),
+            (3, 'Charlie', 35)
+        ) AS v(id, name, age);
+        """
+    )
+    duckdb.sql(f"COPY sample_data TO '{parquet_file}' (FORMAT parquet);")
     return parquet_file
+
+class TestParquetTool:
+    """Test cases for Parquet tool."""
+    def test_parquet_info(self, parquet_tools, sample_parquet_data):
+        """Test the parquet_info function."""
+        parquet_info = parquet_tools["parquet_info"]
+        result = parquet_info(
+            file_path=sample_parquet_data.name,
+            workspace_id=TEST_WORKSPACE_ID,
+            agent_id=TEST_AGENT_ID,
+            session_id=TEST_SESSION_ID,
+            columns_limit=10,
+        )
+        assert "columns" in result
+        assert "row_count" in result
+        assert result["row_count"] == 3
+
+    def test_parquet_preview(self, parquet_tools, sample_parquet_data):
+        """Test the parquet_preview function."""
+        parquet_preview = parquet_tools["parquet_preview"]
+        result = parquet_preview(
+            file_path=sample_parquet_data.name,
+            workspace_id=TEST_WORKSPACE_ID,
+            agent_id=TEST_AGENT_ID,
+            session_id=TEST_SESSION_ID,
+            limit=2,
+        )
+        assert "rows" in result
+        assert [row["name"] for row in result["rows"]] == ["Alice", "Bob"]
+
+    def test_run_sql_on_parquet(self, parquet_tools, sample_parquet_data):
+        """Test the run_sql_on_parquet function."""
+        run_sql_on_parquet = parquet_tools["run_sql_on_parquet"]
+        query = "SELECT name FROM sample_data WHERE age > 28;"
+        result = run_sql_on_parquet(
+            file_path=sample_parquet_data.name,
+            query=query,
+            workspace_id=TEST_WORKSPACE_ID,
+            agent_id=TEST_AGENT_ID,
+            session_id=TEST_SESSION_ID
+        )
+        assert "rows" in result
+        names = [row["name"] for row in result["rows"]]
+        assert "Alice" in names and "Charlie" in names and "Bob" not in names
+
+    def test_sample_parquet(self, parquet_tools, sample_parquet_data):
+        """Test the sample_parquet function."""
+        sample_parquet = parquet_tools["sample_parquet"]
+        result = sample_parquet(
+            file_path=sample_parquet_data.name,
+            n=2,
+            workspace_id=TEST_WORKSPACE_ID,
+            agent_id=TEST_AGENT_ID,
+            session_id=TEST_SESSION_ID,
+        )
+        assert "rows" in result
+        assert [row["name"] for row in result["rows"]] == ["Alice", "Bob"]
+
+    def test_parquet_info_invalid_path(self, parquet_tools):
+        """Test parquet_info with an invalid file path."""
+        parquet_info = parquet_tools["parquet_info"]
+        result = parquet_info(
+            file_path="invalid/path/to/file.parquet",
+            workspace_id=TEST_WORKSPACE_ID,
+            agent_id=TEST_AGENT_ID,
+            session_id=TEST_SESSION_ID,
+            columns_limit=10,
+        )
+        assert "error" in result
+
+    def test_parquet_preview_invalid_path(self, parquet_tools):
+        """Test parquet_preview with an invalid file path."""
+        parquet_preview = parquet_tools["parquet_preview"]
+        result = parquet_preview(
+            file_path="invalid/path/to/file.parquet",
+            workspace_id=TEST_WORKSPACE_ID,
+            agent_id=TEST_AGENT_ID,
+            session_id=TEST_SESSION_ID,
+            limit=2,
+        )
+        assert "error" in result
+
+    def test_run_sql_on_parquet_invalid_query(self, parquet_tools, sample_parquet_data):
+        """Test run_sql_on_parquet with an invalid SQL query."""
+        run_sql_on_parquet = parquet_tools["run_sql_on_parquet"]
+        query = "SELECT non_existing_column FROM sample_data;"
+        result = run_sql_on_parquet(
+            file_path=str(sample_parquet_data),
+            query=query,
+            workspace_id=TEST_WORKSPACE_ID,
+            agent_id=TEST_AGENT_ID,
+            session_id=TEST_SESSION_ID,
+        )
+        assert "error" in result
+
+
 
 

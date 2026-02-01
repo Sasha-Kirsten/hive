@@ -39,6 +39,8 @@ from .pdf_read_tool import register_tools as register_pdf_read
 from .web_scrape_tool import register_tools as register_web_scrape
 from .web_search_tool import register_tools as register_web_search
 
+from aden_tools.tools.parquet_tool import register_tools as register_parquet_tool
+
 
 def register_all_tools(
     mcp: FastMCP,
@@ -74,6 +76,7 @@ def register_all_tools(
     register_grep_search(mcp)
     register_execute_command(mcp)
     register_csv(mcp)
+    register_parquet_tool(mcp)
 
     return [
         "example_tool",
@@ -93,6 +96,10 @@ def register_all_tools(
         "csv_append",
         "csv_info",
         "csv_sql",
+        "parquet_info",
+        "parquet_preview",
+        "sample_parquet",
+        "run_sql_on_parquet",
     ]
 
 
